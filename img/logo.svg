@@ -1,0 +1,27 @@
+<svg viewBox="0 0 500 300" xmlns="http://www.w3.org/2000/svg">
+  <!-- Fundo -->
+  <rect width="500" height="300" rx="20" ry="20" fill="#f0f9ff" />
+  
+  <!-- Taça de sorvete -->
+  <path d="M250 220 L290 120 Q300 80 250 80 Q200 80 210 120 L250 220" fill="#FFD700" stroke="#333" stroke-width="3" />
+  
+  <!-- Bolas de sorvete -->
+  <circle cx="250" cy="85" r="35" fill="#FF6B6B" stroke="#333" stroke-width="2" />
+  <circle cx="230" cy="60" r="30" fill="#4ECDC4" stroke="#333" stroke-width="2" />
+  <circle cx="270" cy="60" r="30" fill="#FF8C42" stroke="#333" stroke-width="2" />
+
+  <!-- Varinha mágica -->
+  <line x1="320" y1="100" x2="350" y2="50" stroke="#8A2BE2" stroke-width="4" />
+  <polygon points="345,40 350,30 355,40 350,45" fill="#FFD700" stroke="#333" stroke-width="1" />
+  <circle cx="350" cy="30" r="8" fill="#FFD700" stroke="#333" stroke-width="1" />
+  
+  <!-- Brilhos mágicos -->
+  <circle cx="330" cy="70" r="3" fill="#FFD700" />
+  <circle cx="340" cy="60" r="2" fill="#FFD700" />
+  <circle cx="335" cy="80" r="2" fill="#FFD700" />
+  <circle cx="360" cy="40" r="3" fill="#FFD700" />
+  
+  <!-- Texto -->
+  <text x="250" y="250" font-family="'Brush Script MT', cursive" font-size="40" text-anchor="middle" fill="#333">Gelato Mágico</text>
+  <text x="250" y="275" font-family="Arial, sans-serif" font-size="16" text-anchor="middle" fill="#666">Sabor que encanta</text>
+</svg>
