@@ -1,0 +1,271 @@
+name: Deploy Azure ML Infrastructure and Pipeline
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'infrastructure/**'
+      - 'src/**'
+      - '.github/workflows/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'infrastructure/**'
+      - 'src/**'
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+env:
+  AZURE_RESOURCEGROUP_NAME: rg-dio-projeto-01
+  AZURE_LOCATION: eastus2
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.8'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install azure-cli azure-identity azure-mgmt-resource azure-ai-ml
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Create Resource Group if not exists
+        run: |
+          az group show --name ${{ env.AZURE_RESOURCEGROUP_NAME }} || \
+          az group create --name ${{ env.AZURE_RESOURCEGROUP_NAME }} --location ${{ env.AZURE_LOCATION }}
+
+      - name: Deploy ARM Template
+        id: arm_deploy
+        uses: azure/arm-deploy@v1
+        with:
+          resourceGroupName: ${{ env.AZURE_RESOURCEGROUP_NAME }}
+          template: ./infrastructure/pipeline-completo.json
+          parameters: workspaceName=ml-dio-projeto-01 location=${{ env.AZURE_LOCATION }}
+          failOnStdErr: false
+
+      - name: Upload Dataset to Azure ML
+        run: |
+          az extension add -n ml -y
+          az configure --defaults group=${{ env.AZURE_RESOURCEGROUP_NAME }} workspace=ml-dio-projeto-01
+          
+          # Generate and upload dataset
+          python -c "
+          import pandas as pd
+          import numpy as np
+          from datetime import datetime, timedelta
+
+          # Generate synthetic data
+          np.random.seed(42)
+          start_date = datetime(2023, 1, 1)
+          dates = [start_date + timedelta(days=i) for i in range(100)]
+          
+          # Temperature with seasonal pattern
+          temperatures = [25 + 5 * np.sin(i/30*np.pi) + np.random.normal(0, 2) for i in range(100)]
+          temperatures = [max(15, min(38, t)) for t in temperatures]
+          
+          # Sales based on temperature plus noise
+          sales = [100 + 10 * (t - 20) + np.random.normal(0, 15) for t in temperatures]
+          sales = [max(10, int(s)) for s in sales]
+          
+          # Create dataframe
+          df = pd.DataFrame({
+              'data': [d.strftime('%Y-%m-%d') for d in dates],
+              'temperatura': temperatures,
+              'vendas': sales
+          })
+          
+          # Save to CSV
+          df.to_csv('sorvete_ml.csv', index=False)
+          print('Dataset created successfully')
+          "
+          
+          # Register dataset in Azure ML
+          az ml data create --name sorvetes-dataset --version 1 --path sorvete_ml.csv --type uri_file
+
+      - name: Create and Run AutoML Job
+        run: |
+          # Create AutoML config file
+          cat > automl_job.yml << EOF
+          $schema: https://azuremlschemas.azureedge.net/latest/automl.regression.schema.json
+          name: sorvete-vendas-automl
+          experiment_name: sorvete-vendas
+          compute: cpu-cluster
+          training_data:
+            type: uri_file
+            path: azureml:sorvetes-dataset:1
+          target_column_name: vendas
+          primary_metric: r2_score
+          n_cross_validations: 5
+          limits:
+            max_trials: 10
+            max_concurrent_trials: 2
+            timeout_minutes: 30
+          training_parameters:
+            early_stopping: True
+          EOF
+
+          # Submit AutoML job
+          az ml job create --file automl_job.yml --web
+          
+          # Wait for job completion (for demo we'll continue without waiting)
+          echo "AutoML job submitted. Check Azure ML Studio for progress."
+
+      - name: Create Pipeline Job
+        run: |
+          # Create pipeline config file
+          cat > pipeline_job.yml << EOF
+          $schema: https://azuremlschemas.azureedge.net/latest/pipelineJob.schema.json
+          name: sorvete-vendas-pipeline
+          display_name: Sorvete Sales Prediction Pipeline
+          experiment_name: sorvete-vendas-pipeline
+          type: pipeline
+          
+          jobs:
+            preprocessing:
+              type: command
+              command: >
+                python -c "
+                import pandas as pd
+                print('Loading data...')
+                data = pd.read_csv('\${{inputs.data_input}}')
+                print('Data shape:', data.shape)
+                print('Creating additional features...')
+                data['temperatura_squared'] = data['temperatura'] ** 2
+                data.to_csv('\${{outputs.processed_data}}', index=False)
+                print('Preprocessing complete')
+                "
+              environment: azureml:AzureML-sklearn-1.0-ubuntu20.04-py38-cpu:1
+              inputs:
+                data_input:
+                  type: uri_file
+                  path: azureml:sorvetes-dataset:1
+              outputs:
+                processed_data:
+                  type: uri_file
+          
+            training:
+              type: command
+              command: >
+                python -c "
+                import pandas as pd
+                import numpy as np
+                import pickle
+                from sklearn.model_selection import train_test_split
+                from sklearn.linear_model import LinearRegression
+                from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+                from sklearn.metrics import r2_score, mean_squared_error
+                
+                print('Loading data...')
+                data = pd.read_csv('\${{inputs.processed_data}}')
+                
+                print('Preparing data...')
+                X = data[['temperatura', 'temperatura_squared']]
+                y = data['vendas']
+                X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+                
+                print('Training models...')
+                models = {
+                    'Linear Regression': LinearRegression(),
+                    'Random Forest': RandomForestRegressor(n_estimators=100, random_state=42),
+                    'Gradient Boosting': GradientBoostingRegressor(n_estimators=100, random_state=42)
+                }
+                
+                results = {}
+                for name, model in models.items():
+                    print(f'Training {name}...')
+                    model.fit(X_train, y_train)
+                    y_pred = model.predict(X_test)
+                    r2 = r2_score(y_test, y_pred)
+                    rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+                    results[name] = {'model': model, 'r2': r2, 'rmse': rmse}
+                    print(f'{name}: R² = {r2:.4f}, RMSE = {rmse:.2f}')
+                
+                best_model_name = max(results, key=lambda k: results[k]['r2'])
+                best_model = results[best_model_name]['model']
+                print(f'Best model: {best_model_name}')
+                
+                with open('\${{outputs.model}}', 'wb') as f:
+                    pickle.dump(best_model, f)
+                
+                with open('\${{outputs.metrics}}', 'w') as f:
+                    f.write(f'Best model: {best_model_name}\\n')
+                    f.write(f'R²: {results[best_model_name][\"r2\"]:.4f}\\n')
+                    f.write(f'RMSE: {results[best_model_name][\"rmse\"]:.2f}\\n')
+                
+                print('Training complete')
+                "
+              environment: azureml:AzureML-sklearn-1.0-ubuntu20.04-py38-cpu:1
+              inputs:
+                processed_data:
+                  type: uri_file
+                  path: \${{parent.jobs.preprocessing.outputs.processed_data}}
+              outputs:
+                model:
+                  type: uri_file
+                metrics:
+                  type: uri_file
+          
+            register_model:
+              type: command
+              command: >
+                python -c "
+                import os
+                import pickle
+                import json
+                from azure.ai.ml import MLClient
+                from azure.ai.ml.entities import Model
+                from azure.identity import DefaultAzureCredential
+                
+                print('Loading model...')
+                with open('\${{inputs.model}}', 'rb') as f:
+                    model = pickle.load(f)
+                
+                print('Saving model files...')
+                os.makedirs('model_dir', exist_ok=True)
+                
+                # Save model in MLflow format for easier deployment
+                import mlflow.sklearn
+                mlflow.sklearn.save_model(model, 'model_dir')
+                
+                print('Model saved to model_dir')
+                
+                # Write model info
+                with open('\${{outputs.model_info}}', 'w') as f:
+                    f.write('Model registered successfully')
+                "
+              environment: azureml:AzureML-sklearn-1.0-ubuntu20.04-py38-cpu:1
+              inputs:
+                model:
+                  type: uri_file
+                  path: \${{parent.jobs.training.outputs.model}}
+                metrics:
+                  type: uri_file
+                  path: \${{parent.jobs.training.outputs.metrics}}
+              outputs:
+                model_info:
+                  type: uri_file
+          EOF
+          
+          # Submit pipeline job
+          az ml job create --file pipeline_job.yml --web
+          
+          echo "Pipeline job submitted. Check Azure ML Studio for progress."
+
+      - name: Prepare Model for Deployment
+        run: |
+          echo "To register and deploy your model after pipeline completion, run:"
+          echo "az ml model create --name sorvete-vendas-model --version 1 --path runs:/[RUN_ID]/model_dir --type mlflow_model"
+          echo "az ml online-endpoint create --name sorvete-endpoint"
+          echo "az ml online-deployment create --name sorvete-deployment --endpoint sorvete-endpoint --model azureml:sorvete-vendas-model:1 --instance-type Standard_DS2_v2 --instance-count 1"
