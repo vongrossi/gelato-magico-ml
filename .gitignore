@@ -1,0 +1,12 @@
+# Arquivos Python
+__pycache__/
+*.py[cod]
+*$py.class
+.ipynb_checkpoints
+
+# Ambientes virtuais
+venv/
+ENV/
+
+# Arquivos específicos do projeto
+config.json
